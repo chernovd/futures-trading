@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Trading Data Visualization</title>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%; /* Ensure the html and body take up full viewport height */
+        }
+        #candlestickChart {
+            height: 50%; /* 50% of the viewport height */
+            width: 95%;
+            margin-left: 3%;
+        }
+        #rsiChart, #macdChart {
+            height: 25%;
+            width: 95%;
+            margin-left: 3%;
+        }
+    </style>
+</head>
+<body>
+    <div style="margin-left:3%;margin-top:8px">
+        <label for="pairSelect">Pair:</label>
+        <select id="pairSelect"></select>
+    </div>
+    <div id="candlestickChart"></div>
+    <div id="rsiChart"></div>
+    <div id="macdChart"></div>
+    <script>
+        $(document).ready(function() {
+            function getParam(name, fallback) {
+                const url = new URL(window.location.href);
+                return url.searchParams.get(name) || fallback;
+            }
+
+            function loadPairList(selected) {
+                $.getJSON('/pairs', function(pairs) {
+                    const sel = $('#pairSelect');
+                    sel.empty();
+                    (pairs || []).forEach(p => sel.append(`<option value="${p}">${p}</option>`));
+                    if (selected && pairs.includes(selected)) sel.val(selected);
+                    sel.on('change', function(){
+                        const newPair = $(this).val();
+                        const url = new URL(window.location.href);
+                        url.searchParams.set('pair', newPair);
+                        window.location.href = url.toString();
+                    });
+                });
+            }
+
+            const pair = getParam('pair', 'BTC_USDT');
+            loadPairList(pair);
+            $.getJSON(`/data?pair=${pair}`, function(data) {
+                const candleChartApi = LightweightCharts.createChart(document.getElementById('candlestickChart'), {
+                    height: document.getElementById('candlestickChart').clientHeight,
+                    width: document.getElementById('candlestickChart').clientWidth,
+                    layout: {
+                        backgroundColor: '#ffffff',
+                        textColor: '#000',
+                    },
+                    grid: {
+                        vertLines: {
+                            color: '#e1ecf1',
+                        },
+                        horzLines: {
+                            color: '#e1ecf1',
+                        },
+                    },
+                    crosshair: {
+                        mode: LightweightCharts.CrosshairMode.Normal,
+                    },
+                    priceScale: {
+                        borderColor: '#485c7b',
+                    },
+                    timeScale: {
+                        borderColor: '#485c7b',
+                        timeVisible: true,
+                        secondsVisible: false,
+                    },
+                });
+
+                function convertScientificNotationToFloat(number) {
+                    return parseFloat(number);
+                }
+
+                const scaleFactor = 1e6;
+
+                function addTradeMarkers(series, data) {
+                    const markers = [];
+                    if (Array.isArray(data.tradeMarkers)) {
+                        data.tradeMarkers.forEach((m, idx) => {
+                            const marker = {
+                                time: new Date(m.time).getTime() / 1000,
+                                position: m.position || 'inBar',
+                                color: m.color || 'blue',
+                                shape: m.shape || 'circle',
+                                text: m.text || ''
+                            };
+
+                            markers.push(marker);
+                        });
+                    }
+                    series.setMarkers(markers);
+                }
+
+
+                // Render price as a line series instead of candles
+                const priceSeries = candleChartApi.addLineSeries({
+                    color: '#2962FF',
+                    lineWidth: 2,
+                    priceFormat: {
+                        type: 'custom',
+                        formatter: (price) => (price / scaleFactor).toFixed(6)
+                    }
+                });
+
+                const priceSeriesData = data.candlestickSeries.map(point => ({
+                    time: new Date(point.time).getTime() / 1000,
+                    value: convertScientificNotationToFloat(point.close) * scaleFactor,
+                }));
+
+                priceSeries.setData(priceSeriesData);
+                addTradeMarkers(priceSeries, data);
+
+                // Add support levels
+                if (data.supportLevels) {
+                    data.supportLevels.forEach(level => {
+                        const lineSeries = candleChartApi.addLineSeries({
+                            color: '#118f113a',
+                            lineWidth: 2,
+                            lineStyle: LightweightCharts.LineStyle.Solid,
+                            lastValueVisible: false,
+                            priceLineVisible: false,
+                        });
+                        const startTime = new Date(level[0]).getTime() / 1000; // Convert to Unix timestamp
+                        const endTime = startTime + (60 * 5 * 15); // Extend the line for 10 minutes if your data is in 5-minute intervals
+                        lineSeries.setData([
+                            { time: startTime, value: convertScientificNotationToFloat(level[1]) *  scaleFactor },
+                            { time: endTime, value: convertScientificNotationToFloat(level[1]) * scaleFactor },
+                        ]);
+                    });
+                }
+
+                // Add resistance levels
+                if (data.resistanceLevels) {
+                    data.resistanceLevels.forEach(level => {
+                        const lineSeries = candleChartApi.addLineSeries({
+                            color: '#bf141446',
+                            lineWidth: 2,
+                            lineStyle: LightweightCharts.LineStyle.Solid,
+                            lastValueVisible: false,
+                            priceLineVisible: false,
+                        });
+                        const startTime = new Date(level[0]).getTime() / 1000; // Convert to Unix timestamp
+                        const endTime = startTime + (60 * 5 * 10); // Extend the line for 10 minutes if your data is in 5-minute intervals
+                        lineSeries.setData([
+                            { time: startTime, value: convertScientificNotationToFloat(level[1]) * scaleFactor },
+                            { time: endTime, value: convertScientificNotationToFloat(level[1]) * scaleFactor },
+                        ]);
+                    });
+                }
+
+                candleChartApi.timeScale().fitContent();
+
+
+                // Create the RSI chart
+                const rsiChartApi = LightweightCharts.createChart(document.getElementById('rsiChart'), {
+                    height: document.getElementById('rsiChart').clientHeight,
+                    width: document.getElementById('candlestickChart').clientWidth,
+                    layout: {
+                        backgroundColor: '#ffffff',
+                        textColor: '#000',
+                    },
+                    grid: {
+                        vertLines: {
+                            color: '#e1ecf1',
+                        },
+                        horzLines: {
+                            color: '#e1ecf1',
+                        },
+                    },
+                    priceScale: {
+                        borderColor: '#485c7b',
+                    },
+                    timeScale: {
+                        borderColor: '#485c7b',
+                        timeVisible: true,
+                        secondsVisible: false,
+                    },
+                });
+
+                const rsiSeries = rsiChartApi.addLineSeries({
+                    color: '#009688',
+                    lineWidth: 2,
+                });
+
+                // Prepare the data for the RSI chart
+                const rsiSeriesData = data.candlestickSeries.map(point => ({
+                    time: new Date(point.time).getTime() / 1000,
+                    value: point.RSI,
+                }));
+
+                rsiSeries.setData(rsiSeriesData);
+
+                // Create the MACD chart
+                const macdChartApi = LightweightCharts.createChart(document.getElementById('macdChart'), {
+                    height: document.getElementById('macdChart').clientHeight,
+                    width: document.getElementById('candlestickChart').clientWidth,
+                    layout: {
+                        backgroundColor: '#ffffff',
+                        textColor: '#000',
+                    },
+                    grid: {
+                        vertLines: {
+                            color: '#e1ecf1',
+                        },
+                        horzLines: {
+                            color: '#e1ecf1',
+                        },
+                    },
+                    priceScale: {
+                        borderColor: '#485c7b',
+                    },
+                    timeScale: {
+                        borderColor: '#485c7b',
+                        timeVisible: true,
+                        secondsVisible: false,
+                    },
+                });
+
+                const macdSeries = macdChartApi.addLineSeries({
+                    color: '#FF0000',
+                    lineWidth: 2,
+                });
+
+                const signalSeries = macdChartApi.addLineSeries({
+                    color: '#00FF00',
+                    lineWidth: 2,
+                });
+
+                const histogramSeries = macdChartApi.addHistogramSeries({
+                    color: '#0000FF',
+                    priceFormat: {
+                        type: 'volume',
+                    },
+                    priceScaleId: '',
+                    scaleMargins: {
+                        top: 0.32,
+                        bottom: 0,
+                    },
+                });
+
+                const histogramSeriesData = data.candlestickSeries.map(point => ({
+                    time: new Date(point.time).getTime() / 1000,
+                    value: point.Histogram,
+                }));
+
+                // Prepare the data for the MACD chart
+                const macdSeriesData = data.candlestickSeries.map(point => ({
+                    time: new Date(point.time).getTime() / 1000,
+                    value: convertScientificNotationToFloat(point.MACD) * scaleFactor,
+                }));
+
+                const signalSeriesData = data.candlestickSeries.map(point => ({
+                    time: new Date(point.time).getTime() / 1000,
+                    value: convertScientificNotationToFloat(point.Signal) * scaleFactor,
+                }));
+
+
+                histogramSeries.setData(histogramSeriesData);
+                macdSeries.setData(macdSeriesData);
+                signalSeries.setData(signalSeriesData);
+
+                rsiChartApi.timeScale().fitContent();
+                macdChartApi.timeScale().fitContent();
+            });
+        });
+    </script>
+</body>
+</html>
